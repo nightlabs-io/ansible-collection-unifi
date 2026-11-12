@@ -1,0 +1,107 @@
+---
+# Integration tests for nightlabs.unifi.dns_policy_info against a live console.
+# Connection details come from tests/integration/integration_config.yml (see the .template).
+# Read-only, and console-agnostic: every ID used is discovered at runtime.
+
+- name: Check the connection variables are set
+  ansible.builtin.assert:
+    that:
+      - unifi_host is defined
+      - unifi_api_key is defined
+    fail_msg: Copy tests/integration/integration_config.yml.template to integration_config.yml and fill it in.
+    quiet: true
+
+- name: Test dns_policy_info
+  module_defaults:
+    group/nightlabs.unifi.unifi:
+      host: "{{ unifi_host }}"
+      api_key: "{{ unifi_api_key }}"
+      validate_certs: "{{ unifi_validate_certs | default(true) }}"
+  vars:
+    site: "{{ unifi_site | default('default') }}"
+  block:
+    - name: List every DNS policy on the site
+      nightlabs.unifi.dns_policy_info:
+        site: "{{ site }}"
+      register: all_policies
+
+    - name: Check the listing, and the fields RETURN documents as always present
+      ansible.builtin.assert:
+        that:
+          - all_policies is not changed
+          - all_policies.policies is sequence
+          - all_policies.policies is not mapping
+          - all_policies.policies | rejectattr('id', 'defined') | list == []
+          - all_policies.policies | rejectattr('type', 'defined') | list == []
+          - all_policies.policies | rejectattr('domain', 'defined') | list == []
+          - all_policies.policies | rejectattr('enabled', 'defined') | list == []
+
+    - name: Check the type-dependent fields RETURN documents
+      ansible.builtin.assert:
+        that:
+          - a_records | rejectattr('ipv4Address', 'defined') | list == []
+          - aaaa_records | rejectattr('ipv6Address', 'defined') | list == []
+          - cnames | rejectattr('targetDomain', 'defined') | list == []
+      vars:
+        a_records: "{{ all_policies.policies | selectattr('type', 'equalto', 'A_RECORD') }}"
+        aaaa_records: "{{ all_policies.policies | selectattr('type', 'equalto', 'AAAA_RECORD') }}"
+        cnames: "{{ all_policies.policies | selectattr('type', 'equalto', 'CNAME_RECORD') }}"
+
+    # Prefer a CNAME so the single lookup covers the less common record type; fall back to any policy.
+    - name: Pick a policy to look up
+      ansible.builtin.set_fact:
+        picked: >-
+          {{ (all_policies.policies | selectattr('type', 'equalto', 'CNAME_RECORD') | list
+              + all_policies.policies) | first | default(none) }}
+
+    - name: Look up that policy by UUID
+      nightlabs.unifi.dns_policy_info:
+        site: "{{ site }}"
+        policy: "{{ picked.id }}"
+      register: one_policy
+      when: picked is not none
+
+    - name: Check the single lookup returns a one-element list matching the listing
+      ansible.builtin.assert:
+        that:
+          - one_policy.policies is sequence
+          - one_policy.policies is not mapping
+          - one_policy.policies | length == 1
+          - one_policy.policies[0] == picked
+        fail_msg: "Expected a one-element list equal to the listing entry; got {{ one_policy.policies | type_debug }}"
+      when: picked is not none
+
+    - name: Check mode returns the same result
+      nightlabs.unifi.dns_policy_info:
+        site: "{{ site }}"
+      check_mode: true
+      register: in_check_mode
+
+    - name: Check the check-mode run
+      ansible.builtin.assert:
+        that:
+          - in_check_mode is not changed
+          - in_check_mode.policies | map(attribute='id') | sort == all_policies.policies | map(attribute='id') | sort
+
+    # --- failure paths -------------------------------------------------------
+
+    - name: Unknown site fails
+      nightlabs.unifi.dns_policy_info:
+        site: no-such-site
+      register: bad_site
+      ignore_errors: true
+
+    - name: Unknown policy UUID fails
+      nightlabs.unifi.dns_policy_info:
+        site: "{{ site }}"
+        policy: 00000000-0000-0000-0000-000000000000
+      register: bad_policy
+      ignore_errors: true
+
+    - name: Check both failures and their messages
+      ansible.builtin.assert:
+        that:
+          - bad_site is failed
+          - bad_site.msg is search("Could not resolve site")
+          - bad_policy is failed
+          - bad_policy.msg is search("Policy not found")

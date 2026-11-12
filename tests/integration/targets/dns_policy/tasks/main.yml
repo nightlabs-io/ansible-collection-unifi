@@ -1,0 +1,365 @@
+---
+# Integration tests for nightlabs.unifi.dns_policy against a live console.
+# Connection details come from tests/integration/integration_config.yml (see the .template).
+# Destructive: creates, changes and deletes three throwaway records, named below. They are
+# removed before the tests start and again afterwards, whether or not the tests pass.
+
+- name: Check the connection variables are set
+  ansible.builtin.assert:
+    that:
+      - unifi_host is defined
+      - unifi_api_key is defined
+    fail_msg: Copy tests/integration/integration_config.yml.template to integration_config.yml and fill it in.
+    quiet: true
+
+- name: Test dns_policy
+  module_defaults:
+    group/nightlabs.unifi.unifi:
+      host: "{{ unifi_host }}"
+      api_key: "{{ unifi_api_key }}"
+      validate_certs: "{{ unifi_validate_certs | default(true) }}"
+  vars:
+    site: "{{ unifi_site | default('default') }}"
+    record_type_a: "A_RECORD"
+    record_type_aaaa: "AAAA_RECORD"
+    domain_a: "ansible-test-a.lan"
+    domain_aaaa: "ansible-test-aaaa.lan"
+    domain_cname: "ansible-test-cname.lan"
+    record_type_cname: "CNAME_RECORD"
+    target_domain_cname: "ansible-test-a.lan"
+    target_domain_cname_updated: "ansible-test-aaaa.lan"
+    enabled: true
+    ipv4_address_a: "192.0.2.1"
+    ipv4_address_a_updated: "192.0.2.2"
+    ipv4_address_a_check_mode: "192.0.2.3"
+    ipv6_address_aaaa: "2001:db8::10"
+    ttl_seconds_a: 3600
+    ttl_seconds_aaaa: 300
+  block:
+    # --- pre-flight: remove anything a crashed earlier run left behind --------
+
+    - name: Pre-flight -> Delete {{ domain_a }}
+      nightlabs.unifi.dns_policy:
+        site: "{{ site }}"
+        domain: "{{ domain_a }}"
+        state: absent
+
+    - name: Pre-flight -> Delete {{ domain_aaaa }}
+      nightlabs.unifi.dns_policy:
+        site: "{{ site }}"
+        domain: "{{ domain_aaaa }}"
+        state: absent
+
+    - name: Pre-flight -> Delete {{ domain_cname }}
+      nightlabs.unifi.dns_policy:
+        site: "{{ site }}"
+        domain: "{{ domain_cname }}"
+        state: absent
+
+    # --- A record: create in check mode, create, rerun ------------------------
+
+    - name: Create A_RECORD {{ domain_a }} in check mode
+      nightlabs.unifi.dns_policy:
+        site: "{{ site }}"
+        record_type: "{{ record_type_a }}"
+        domain: "{{ domain_a }}"
+        ipv4_address: "{{ ipv4_address_a }}"
+      check_mode: true
+      register: check_mode_created_a
+
+    - name: Check check mode predicted a create without returning a record
+      ansible.builtin.assert:
+        that:
+          - check_mode_created_a is changed
+          - check_mode_created_a.policy is not defined
+
+    - name: Create A_RECORD {{ domain_a }}
+      nightlabs.unifi.dns_policy:
+        site: "{{ site }}"
+        record_type: "{{ record_type_a }}"
+        domain: "{{ domain_a }}"
+        enabled: "{{ enabled }}"
+        ipv4_address: "{{ ipv4_address_a }}"
+        ttl_seconds: "{{ ttl_seconds_a }}"
+      register: created_a
+
+    - name: Check the created A record
+      ansible.builtin.assert:
+        that:
+          # Still a change, so the check-mode run above created nothing.
+          - created_a is changed
+          - created_a.policy.id is defined
+          - created_a.policy.type == record_type_a
+          - created_a.policy.domain == domain_a
+          - created_a.policy.enabled == enabled
+          - created_a.policy.ipv4Address == ipv4_address_a
+          - created_a.policy.ipv6Address is not defined
+          - created_a.policy.ttlSeconds == ttl_seconds_a
+
+    - name: Create A_RECORD {{ domain_a }} again with the same values
+      nightlabs.unifi.dns_policy:
+        site: "{{ site }}"
+        record_type: "{{ record_type_a }}"
+        domain: "{{ domain_a }}"
+        enabled: "{{ enabled }}"
+        ipv4_address: "{{ ipv4_address_a }}"
+        ttl_seconds: "{{ ttl_seconds_a }}"
+      register: recreated_a
+
+    - name: Check the second create changed nothing and returned the same record
+      ansible.builtin.assert:
+        that:
+          - recreated_a is not changed
+          - recreated_a.policy.id == created_a.policy.id
+
+    # --- A record: update, rerun ----------------------------------------------
+
+    - name: Update A_RECORD {{ domain_a }}, leaving the TTL unset
+      nightlabs.unifi.dns_policy:
+        site: "{{ site }}"
+        record_type: "{{ record_type_a }}"
+        domain: "{{ domain_a }}"
+        enabled: false
+        ipv4_address: "{{ ipv4_address_a_updated }}"
+      register: updated_a
+
+    - name: Check the update changed the set fields and kept the TTL
+      ansible.builtin.assert:
+        that:
+          - updated_a is changed
+          - updated_a.policy.id == created_a.policy.id
+          - updated_a.policy.enabled == false
+          - updated_a.policy.ipv4Address == ipv4_address_a_updated
+          - updated_a.policy.ttlSeconds == ttl_seconds_a
+
+    - name: Update A_RECORD {{ domain_a }} again with the same values
+      nightlabs.unifi.dns_policy:
+        site: "{{ site }}"
+        record_type: "{{ record_type_a }}"
+        domain: "{{ domain_a }}"
+        enabled: false
+        ipv4_address: "{{ ipv4_address_a_updated }}"
+      register: reupdated_a
+
+    - name: Check the second update changed nothing
+      ansible.builtin.assert:
+        that:
+          - reupdated_a is not changed
+
+    - name: Look up {{ domain_a }} with mixed case
+      nightlabs.unifi.dns_policy:
+        site: "{{ site }}"
+        record_type: "{{ record_type_a }}"
+        domain: "{{ domain_a | upper }}"
+        ipv4_address: "{{ ipv4_address_a_updated }}"
+      register: mixed_case_a
+
+    - name: Check the mixed-case domain matched the existing record without changing it
+      ansible.builtin.assert:
+        that:
+          - mixed_case_a is not changed
+          - mixed_case_a.policy.id == created_a.policy.id
+
+    # --- A record: check mode -------------------------------------------------
+
+    - name: Change the address of {{ domain_a }} in check mode
+      nightlabs.unifi.dns_policy:
+        site: "{{ site }}"
+        record_type: "{{ record_type_a }}"
+        domain: "{{ domain_a }}"
+        ipv4_address: "{{ ipv4_address_a_check_mode }}"
+      check_mode: true
+      register: check_mode_a
+
+    - name: Rerun with the real current address
+      nightlabs.unifi.dns_policy:
+        site: "{{ site }}"
+        record_type: "{{ record_type_a }}"
+        domain: "{{ domain_a }}"
+        ipv4_address: "{{ ipv4_address_a_updated }}"
+      register: after_check_mode_a
+
+    - name: Check check mode predicted a change but made none
+      ansible.builtin.assert:
+        that:
+          - check_mode_a is changed
+          - after_check_mode_a is not changed
+          - after_check_mode_a.policy.ipv4Address == ipv4_address_a_updated
+
+    # --- A record: type change is refused -------------------------------------
+
+    - name: Try to change {{ domain_a }} to an AAAA record
+      nightlabs.unifi.dns_policy:
+        site: "{{ site }}"
+        record_type: "{{ record_type_aaaa }}"
+        domain: "{{ domain_a }}"
+        ipv6_address: "{{ ipv6_address_aaaa }}"
+      register: type_change_a
+      ignore_errors: true
+
+    - name: Check the type change failed with a clear message
+      ansible.builtin.assert:
+        that:
+          - type_change_a is failed
+          - type_change_a.msg is search("Cannot change type")
+
+    # --- A record: value for another type is refused --------------------------
+
+    - name: Try to set a CNAME target on {{ domain_a }}
+      nightlabs.unifi.dns_policy:
+        site: "{{ site }}"
+        record_type: "{{ record_type_a }}"
+        domain: "{{ domain_a }}"
+        ipv4_address: "{{ ipv4_address_a_updated }}"
+        target_domain: "{{ target_domain_cname }}"
+      register: stray_option_a
+      ignore_errors: true
+
+    - name: Check the stray option failed with a clear message
+      ansible.builtin.assert:
+        that:
+          - stray_option_a is failed
+          - stray_option_a.msg is search("target_domain cannot be set")
+
+    # --- A record: delete in check mode, delete, rerun ------------------------
+
+    - name: Delete A_RECORD {{ domain_a }} in check mode
+      nightlabs.unifi.dns_policy:
+        site: "{{ site }}"
+        domain: "{{ domain_a }}"
+        state: absent
+      check_mode: true
+      register: check_mode_deleted_a
+
+    - name: Delete A_RECORD {{ domain_a }}
+      nightlabs.unifi.dns_policy:
+        site: "{{ site }}"
+        domain: "{{ domain_a }}"
+        state: absent
+      register: deleted_a
+
+    - name: Delete A_RECORD {{ domain_a }} again
+      nightlabs.unifi.dns_policy:
+        site: "{{ site }}"
+        domain: "{{ domain_a }}"
+        state: absent
+      register: redeleted_a
+
+    - name: Check check mode predicted the delete, then the real delete changed something and the rerun did not
+      ansible.builtin.assert:
+        that:
+          - check_mode_deleted_a is changed
+          # Still a change, so the check-mode run above deleted nothing.
+          - deleted_a is changed
+          - redeleted_a is not changed
+
+    # --- AAAA record: create, delete ------------------------------------------
+
+    - name: Create AAAA_RECORD {{ domain_aaaa }}
+      nightlabs.unifi.dns_policy:
+        site: "{{ site }}"
+        record_type: "{{ record_type_aaaa }}"
+        domain: "{{ domain_aaaa }}"
+        enabled: "{{ enabled }}"
+        ipv6_address: "{{ ipv6_address_aaaa }}"
+        ttl_seconds: "{{ ttl_seconds_aaaa }}"
+      register: created_aaaa
+
+    - name: Check the created AAAA record
+      ansible.builtin.assert:
+        that:
+          - created_aaaa is changed
+          - created_aaaa.policy.type == record_type_aaaa
+          - created_aaaa.policy.domain == domain_aaaa
+          - created_aaaa.policy.enabled == enabled
+          - created_aaaa.policy.ipv4Address is not defined
+          - created_aaaa.policy.ipv6Address == ipv6_address_aaaa
+          - created_aaaa.policy.ttlSeconds == ttl_seconds_aaaa
+
+    - name: Delete AAAA_RECORD {{ domain_aaaa }}
+      nightlabs.unifi.dns_policy:
+        site: "{{ site }}"
+        domain: "{{ domain_aaaa }}"
+        state: absent
+      register: deleted_aaaa
+
+    - name: Check the AAAA delete changed something
+      ansible.builtin.assert:
+        that:
+          - deleted_aaaa is changed
+
+    # --- CNAME record: create, update target, rerun, delete -------------------
+
+    - name: Create CNAME_RECORD {{ domain_cname }}
+      nightlabs.unifi.dns_policy:
+        site: "{{ site }}"
+        record_type: "{{ record_type_cname }}"
+        domain: "{{ domain_cname }}"
+        target_domain: "{{ target_domain_cname }}"
+      register: created_cname
+
+    - name: Check the created CNAME record, including the create-time defaults
+      ansible.builtin.assert:
+        that:
+          - created_cname is changed
+          - created_cname.policy.type == record_type_cname
+          - created_cname.policy.domain == domain_cname
+          - created_cname.policy.targetDomain == target_domain_cname
+          - created_cname.policy.ipv4Address is not defined
+          - created_cname.policy.enabled == true
+          - created_cname.policy.ttlSeconds == 14400
+
+    - name: Point CNAME_RECORD {{ domain_cname }} at a new target
+      nightlabs.unifi.dns_policy:
+        site: "{{ site }}"
+        record_type: "{{ record_type_cname }}"
+        domain: "{{ domain_cname }}"
+        target_domain: "{{ target_domain_cname_updated }}"
+      register: updated_cname
+
+    - name: Point it at the same target again
+      nightlabs.unifi.dns_policy:
+        site: "{{ site }}"
+        record_type: "{{ record_type_cname }}"
+        domain: "{{ domain_cname }}"
+        target_domain: "{{ target_domain_cname_updated }}"
+      register: reupdated_cname
+
+    - name: Check the target changed once, then not again
+      ansible.builtin.assert:
+        that:
+          - updated_cname is changed
+          - updated_cname.policy.id == created_cname.policy.id
+          - updated_cname.policy.targetDomain == target_domain_cname_updated
+          - reupdated_cname is not changed
+
+    - name: Delete CNAME_RECORD {{ domain_cname }}
+      nightlabs.unifi.dns_policy:
+        site: "{{ site }}"
+        domain: "{{ domain_cname }}"
+        state: absent
+      register: deleted_cname
+
+    - name: Check the CNAME delete changed something
+      ansible.builtin.assert:
+        that:
+          - deleted_cname is changed
+
+  always:
+    - name: Clean up -> Delete {{ domain_a }}
+      nightlabs.unifi.dns_policy:
+        site: "{{ site }}"
+        domain: "{{ domain_a }}"
+        state: absent
+
+    - name: Clean up -> Delete {{ domain_aaaa }}
+      nightlabs.unifi.dns_policy:
+        site: "{{ site }}"
+        domain: "{{ domain_aaaa }}"
+        state: absent
+
+    - name: Clean up -> Delete {{ domain_cname }}
+      nightlabs.unifi.dns_policy:
+        site: "{{ site }}"
+        domain: "{{ domain_cname }}"
+        state: absent

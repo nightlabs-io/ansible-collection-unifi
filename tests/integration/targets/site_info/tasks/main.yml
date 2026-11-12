@@ -1,0 +1,94 @@
+---
+# Integration tests for nightlabs.unifi.site_info against a live console.
+# Connection details come from tests/integration/integration_config.yml (see the .template).
+# Read-only, and console-agnostic: every ID used is discovered at runtime.
+
+- name: Check the connection variables are set
+  ansible.builtin.assert:
+    that:
+      - unifi_host is defined
+      - unifi_api_key is defined
+    fail_msg: Copy tests/integration/integration_config.yml.template to integration_config.yml and fill it in.
+    quiet: true
+
+- name: Test site_info
+  module_defaults:
+    group/nightlabs.unifi.unifi:
+      host: "{{ unifi_host }}"
+      api_key: "{{ unifi_api_key }}"
+      validate_certs: "{{ unifi_validate_certs | default(true) }}"
+  block:
+    - name: List every site
+      nightlabs.unifi.site_info:
+      register: all_sites
+
+    - name: Check the listing
+      ansible.builtin.assert:
+        that:
+          - all_sites is not changed
+          - all_sites.sites is sequence
+          - all_sites.sites is not mapping
+          - all_sites.sites | length > 0
+          - all_sites.sites[0].id is defined
+          - all_sites.sites[0].internalReference is defined
+          - all_sites.sites[0].name is defined
+
+    - name: Look up the first site by internal reference
+      nightlabs.unifi.site_info:
+        site: "{{ all_sites.sites[0].internalReference }}"
+      register: by_reference
+
+    - name: Look up the first site by display name
+      nightlabs.unifi.site_info:
+        site: "{{ all_sites.sites[0].name }}"
+      register: by_name
+
+    - name: Look up the first site by UUID
+      nightlabs.unifi.site_info:
+        site: "{{ all_sites.sites[0].id }}"
+      register: by_uuid
+
+    - name: Check all three lookups return exactly that site
+      ansible.builtin.assert:
+        that:
+          - item.result.sites | length == 1
+          - item.result.sites[0].id == all_sites.sites[0].id
+      loop:
+        - {by: internal reference, result: "{{ by_reference }}"}
+        - {by: display name, result: "{{ by_name }}"}
+        - {by: UUID, result: "{{ by_uuid }}"}
+      loop_control:
+        label: "{{ item.by }}"
+
+    - name: Check mode returns the same result
+      nightlabs.unifi.site_info:
+      check_mode: true
+      register: in_check_mode
+
+    - name: Check the check-mode run
+      ansible.builtin.assert:
+        that:
+          - in_check_mode is not changed
+          - in_check_mode.sites == all_sites.sites
+
+    # --- failure paths -------------------------------------------------------
+
+    - name: Unknown site reference fails
+      nightlabs.unifi.site_info:
+        site: no-such-site
+      register: bad_reference
+      ignore_errors: true
+
+    - name: Unknown site UUID fails
+      nightlabs.unifi.site_info:
+        site: 00000000-0000-0000-0000-000000000000
+      register: bad_uuid
+      ignore_errors: true
+
+    - name: Check both failures and their messages
+      ansible.builtin.assert:
+        that:
+          - bad_reference is failed
+          - bad_reference.msg is search("Could not resolve site")
+          - bad_uuid is failed
+          - bad_uuid.msg is search("Could not resolve site")

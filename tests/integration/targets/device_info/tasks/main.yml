@@ -1,0 +1,92 @@
+---
+# Integration tests for nightlabs.unifi.device_info against a live console.
+# Connection details come from tests/integration/integration_config.yml (see the .template).
+# Read-only, and console-agnostic: every ID used is discovered at runtime.
+
+- name: Check the connection variables are set
+  ansible.builtin.assert:
+    that:
+      - unifi_host is defined
+      - unifi_api_key is defined
+    fail_msg: Copy tests/integration/integration_config.yml.template to integration_config.yml and fill it in.
+    quiet: true
+
+- name: Test device_info
+  module_defaults:
+    group/nightlabs.unifi.unifi:
+      host: "{{ unifi_host }}"
+      api_key: "{{ unifi_api_key }}"
+      validate_certs: "{{ unifi_validate_certs | default(true) }}"
+  vars:
+    site: "{{ unifi_site | default('default') }}"
+  block:
+    - name: List every device on the site
+      nightlabs.unifi.device_info:
+        site: "{{ site }}"
+      register: all_devices
+
+    - name: Check the listing, and the fields RETURN documents as always present
+      ansible.builtin.assert:
+        that:
+          - all_devices is not changed
+          - all_devices.devices is sequence
+          - all_devices.devices is not mapping
+          - all_devices.devices | rejectattr('id', 'defined') | list == []
+          - all_devices.devices | rejectattr('name', 'defined') | list == []
+          - all_devices.devices | rejectattr('model', 'defined') | list == []
+          - all_devices.devices | rejectattr('macAddress', 'defined') | list == []
+          - all_devices.devices | rejectattr('state', 'defined') | list == []
+
+    - name: Look up the first device by UUID
+      nightlabs.unifi.device_info:
+        site: "{{ site }}"
+        device: "{{ all_devices.devices[0].id }}"
+      register: one_device
+      when: all_devices.devices | length > 0
+
+    - name: Check the single lookup returns a one-element list with the detail fields
+      ansible.builtin.assert:
+        that:
+          - one_device.devices is sequence
+          - one_device.devices is not mapping
+          - one_device.devices | length == 1
+          - one_device.devices[0].id == all_devices.devices[0].id
+          - one_device.devices[0].firmwareVersion is defined
+          - one_device.devices[0].interfaces is defined
+        fail_msg: "Expected a one-element list with detail fields; got {{ one_device.devices | type_debug }}"
+      when: all_devices.devices | length > 0
+
+    - name: Check mode returns the same result
+      nightlabs.unifi.device_info:
+        site: "{{ site }}"
+      check_mode: true
+      register: in_check_mode
+
+    - name: Check the check-mode run
+      ansible.builtin.assert:
+        that:
+          - in_check_mode is not changed
+          - in_check_mode.devices | map(attribute='id') | sort == all_devices.devices | map(attribute='id') | sort
+
+    # --- failure paths -------------------------------------------------------
+
+    - name: Unknown site fails
+      nightlabs.unifi.device_info:
+        site: no-such-site
+      register: bad_site
+      ignore_errors: true
+
+    - name: Unknown device UUID fails
+      nightlabs.unifi.device_info:
+        site: "{{ site }}"
+        device: 00000000-0000-0000-0000-000000000000
+      register: bad_device
+      ignore_errors: true
+
+    - name: Check both failures and their messages
+      ansible.builtin.assert:
+        that:
+          - bad_site is failed
+          - bad_site.msg is search("Could not resolve site")
+          - bad_device is failed
+          - bad_device.msg is search("not found on site")

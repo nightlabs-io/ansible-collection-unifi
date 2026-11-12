@@ -1,0 +1,5 @@
+---
+# Read by ansible-test. Limits the Python versions that sanity and unit tests check modules
+# and module_utils against to the versions the collection supports.
+modules:
+  python_requires: '>=3.9'

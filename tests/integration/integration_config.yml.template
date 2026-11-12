@@ -1,0 +1,6 @@
+# Copy to integration_config.yml (gitignored) and fill in. ansible-test passes this file to
+# every integration target as extra vars.
+unifi_host: <console-address>
+unifi_api_key: <api-key>
+unifi_validate_certs: false
+unifi_site: default
