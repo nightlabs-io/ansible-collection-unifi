@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# Copyright: (c) 2026, NightLabs
+# Copyright: (c) 2026, John Cuckovich
 # GNU General Public License v3.0+ (see LICENSE or https://www.gnu.org/licenses/gpl-3.0.txt)
 
 """Shared client for the UniFi Network Integration API."""
@@ -132,24 +132,39 @@ class UnifiClient:
             raise UnifiAPIError("'%s' matches more than one site; use the site's UUID" % site)
         return matches[0]
 
-    def resolve_policy(self, site_id, domain):
-        """Return the DNS policy for `domain` on the site, or None if there isn't one."""
+    def resolve_policy(self, site_id, record_type, domain, identity=None, case_sensitive=()):
+        """Return the DNS policy that is one record, or None if there isn't one.
+
+        A record is its type, its domain and `identity`: the API fields that tell apart
+        records of one type on one domain (an MX record's mail server, for example).
+        Values compare case-insensitively, as DNS names do, except the API fields named
+        in `case_sensitive`.
+        """
 
         if not site_id:
             raise UnifiAPIError("No site specified")
         if not domain:
             raise UnifiAPIError("No domain specified")
 
-        policies = self.get_all("/sites/%s/dns/policies" % site_id)
+        wanted = dict(identity or {}, domain=domain)
 
-        matches = [p for p in policies if domain.lower() == p.get("domain", "").lower()]
+        def same(key, stored, value):
+            if key not in case_sensitive and isinstance(stored, str) and isinstance(value, str):
+                return stored.lower() == value.lower()
+            return stored == value
+
+        policies = self.get_all("/sites/%s/dns/policies" % site_id)
+        matches = [
+            p for p in policies
+            if p.get("type") == record_type and all(same(k, p.get(k), v) for k, v in wanted.items())
+        ]
 
         if not matches:
             return None
-        elif len(matches) > 1:
-            raise UnifiAPIError("'%s' matches more than one DNS policy on site %s, remove the duplicate" % (domain, site_id))
-        else:
-            return matches[0]
+        if len(matches) > 1:
+            raise UnifiAPIError("%s %s matches more than one DNS policy on site %s; remove the duplicate"
+                                % (record_type, ", ".join("%s=%s" % kv for kv in sorted(wanted.items())), site_id))
+        return matches[0]
 
 
 def _to_text(raw):

@@ -1,6 +1,6 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
-# Copyright: (c) 2026, NightLabs
+# Copyright: (c) 2026, John Cuckovich
 # GNU General Public License v3.0+ (see LICENSE or https://www.gnu.org/licenses/gpl-3.0.txt)
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ description:
     using the official Integration API.
   - These are the records added under C(Policy Table > DNS Records) in the Network app.
 author:
-  - NightLabs (@nightlabs-io)
+  - John Cuckovich (@jpcuckovi)
 options:
   policy:
     description:
@@ -64,7 +64,7 @@ RETURN = r"""
 policies:
   description:
     - DNS policies on the site. Always a list, with one element when O(policy) is set and empty when the site has none.
-    - Which address field is present depends on RV(policies[].type).
+    - Which fields are present beyond the common ones depends on RV(policies[].type).
   returned: always
   type: list
   elements: dict
@@ -74,11 +74,15 @@ policies:
       type: str
       sample: 3f1c2a9e-5b7d-4e8f-9a1b-2c3d4e5f6a7b
     type:
-      description: Record type, for example V(A_RECORD), V(AAAA_RECORD) or V(CNAME_RECORD).
+      description:
+        - Record type, one of V(A_RECORD), V(AAAA_RECORD), V(CNAME_RECORD), V(MX_RECORD),
+          V(TXT_RECORD), V(SRV_RECORD) or V(FORWARD_DOMAIN).
       type: str
       sample: A_RECORD
     domain:
-      description: The name the record answers for.
+      description:
+        - The name the record answers for.
+        - For V(SRV_RECORD), the base name; the record is served at C(<service>.<protocol>.<domain>).
       type: str
       sample: host.example.lan
     enabled:
@@ -88,6 +92,7 @@ policies:
     ttlSeconds:
       description: Record TTL in seconds. V(0) means the Network app's C(Auto) TTL.
       type: int
+      returned: when RV(policies[].type) is V(A_RECORD), V(AAAA_RECORD) or V(CNAME_RECORD)
       sample: 0
     metadata:
       description: Information about how the record was created.
@@ -112,6 +117,51 @@ policies:
       type: str
       returned: when RV(policies[].type) is V(CNAME_RECORD)
       sample: target.example.lan
+    mailServerDomain:
+      description: Domain name of the mail server.
+      type: str
+      returned: when RV(policies[].type) is V(MX_RECORD)
+      sample: mail1.example.lan
+    priority:
+      description: Priority of the record; lower values are preferred.
+      type: int
+      returned: when RV(policies[].type) is V(MX_RECORD) or V(SRV_RECORD)
+      sample: 10
+    text:
+      description: Text of the record.
+      type: str
+      returned: when RV(policies[].type) is V(TXT_RECORD)
+      sample: v=spf1 mx -all
+    service:
+      description: Service name, with its leading underscore.
+      type: str
+      returned: when RV(policies[].type) is V(SRV_RECORD)
+      sample: _ldap
+    protocol:
+      description: Protocol, with its leading underscore.
+      type: str
+      returned: when RV(policies[].type) is V(SRV_RECORD)
+      sample: _tcp
+    serverDomain:
+      description: Domain name of the server that provides the service.
+      type: str
+      returned: when RV(policies[].type) is V(SRV_RECORD)
+      sample: ldap.example.lan
+    port:
+      description: Port the service listens on.
+      type: int
+      returned: when RV(policies[].type) is V(SRV_RECORD)
+      sample: 389
+    weight:
+      description: Relative weight among SRV records of equal priority.
+      type: int
+      returned: when RV(policies[].type) is V(SRV_RECORD)
+      sample: 5
+    ipAddress:
+      description: IPv4 or IPv6 address of the DNS server that queries for the domain are forwarded to.
+      type: str
+      returned: when RV(policies[].type) is V(FORWARD_DOMAIN)
+      sample: 192.0.2.53
 """
 
 from ansible.module_utils.basic import AnsibleModule

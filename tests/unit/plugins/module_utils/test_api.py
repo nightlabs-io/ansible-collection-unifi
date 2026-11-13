@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# Copyright: (c) 2026, NightLabs
+# Copyright: (c) 2026, John Cuckovich
 # GNU General Public License v3.0+ (see LICENSE or https://www.gnu.org/licenses/gpl-3.0.txt)
 
 """Unit tests for plugins/module_utils/api.py.
@@ -313,42 +313,76 @@ def test_get_site_returns_whole_record(client, fetch):
 
 # --- resolve_policy ----------------------------------------------------------
 
+# One domain holding several records, as the console allows: two MX, two TXT that differ
+# only in case, and an A record.
+SHARED = [
+    {"type": "MX_RECORD", "id": "mx1", "domain": "example.lan", "mailServerDomain": "mail1.example.lan", "priority": 10},
+    {"type": "MX_RECORD", "id": "mx2", "domain": "example.lan", "mailServerDomain": "mail2.example.lan", "priority": 20},
+    {"type": "TXT_RECORD", "id": "txt1", "domain": "example.lan", "text": "Hello"},
+    {"type": "TXT_RECORD", "id": "txt2", "domain": "example.lan", "text": "hello"},
+    {"type": "A_RECORD", "id": "a1", "domain": "example.lan", "ipv4Address": "192.0.2.30"},
+]
+
+
 def test_resolve_policy_returns_whole_record(client, fetch):
     fetch.side_effect = paged_server(POLICIES)
-    assert client.resolve_policy(SITE_UUID, "app.example.lan") == POLICIES[1]
+    assert client.resolve_policy(SITE_UUID, "CNAME_RECORD", "app.example.lan") == POLICIES[1]
 
 
 def test_resolve_policy_requests_the_site_path(client, fetch):
     fetch.side_effect = paged_server(POLICIES)
-    client.resolve_policy(SITE_UUID, "app.example.lan")
+    client.resolve_policy(SITE_UUID, "CNAME_RECORD", "app.example.lan")
     assert fetch.call_args.args[1].startswith(BASE + "/sites/%s/dns/policies?" % SITE_UUID)
 
 
-def test_resolve_policy_ignores_case(client, fetch):
+def test_resolve_policy_ignores_domain_case(client, fetch):
     fetch.side_effect = paged_server(POLICIES)
-    assert client.resolve_policy(SITE_UUID, "Host1.Example.LAN")["id"] == POLICY_A_UUID
+    assert client.resolve_policy(SITE_UUID, "A_RECORD", "Host1.Example.LAN")["id"] == POLICY_A_UUID
+
+
+def test_resolve_policy_skips_other_types_on_the_domain(client, fetch):
+    fetch.side_effect = paged_server(POLICIES)
+    assert client.resolve_policy(SITE_UUID, "AAAA_RECORD", "host1.example.lan") is None
+
+
+def test_resolve_policy_picks_by_identity(client, fetch):
+    fetch.side_effect = paged_server(SHARED)
+    found = client.resolve_policy(SITE_UUID, "MX_RECORD", "example.lan", {"mailServerDomain": "MAIL2.example.lan"})
+    assert found["id"] == "mx2"
+
+
+def test_resolve_policy_case_sensitive_fields(client, fetch):
+    fetch.side_effect = paged_server(SHARED)
+    found = client.resolve_policy(SITE_UUID, "TXT_RECORD", "example.lan", {"text": "hello"}, case_sensitive=("text",))
+    assert found["id"] == "txt2"
 
 
 def test_resolve_policy_no_match_returns_none(client, fetch):
-    fetch.side_effect = paged_server(POLICIES)
-    assert client.resolve_policy(SITE_UUID, "missing.example.lan") is None
+    fetch.side_effect = paged_server(SHARED)
+    assert client.resolve_policy(SITE_UUID, "MX_RECORD", "example.lan", {"mailServerDomain": "mail3.example.lan"}) is None
 
 
 def test_resolve_policy_empty_site_returns_none(client, fetch):
     fetch.side_effect = paged_server([])
-    assert client.resolve_policy(SITE_UUID, "host1.example.lan") is None
+    assert client.resolve_policy(SITE_UUID, "A_RECORD", "host1.example.lan") is None
+
+
+def test_resolve_policy_without_identity_is_ambiguous(client, fetch):
+    fetch.side_effect = paged_server(SHARED)
+    with pytest.raises(UnifiAPIError, match="MX_RECORD domain=example.lan matches more than one"):
+        client.resolve_policy(SITE_UUID, "MX_RECORD", "example.lan")
 
 
 def test_resolve_policy_duplicate(client, fetch):
     fetch.side_effect = paged_server(POLICIES + [dict(POLICIES[0], id="dup")])
     with pytest.raises(UnifiAPIError, match="more than one DNS policy"):
-        client.resolve_policy(SITE_UUID, "host1.example.lan")
+        client.resolve_policy(SITE_UUID, "A_RECORD", "host1.example.lan")
 
 
 @pytest.mark.parametrize("site_id, domain", [("", "host1.example.lan"), (SITE_UUID, ""), (None, None)])
 def test_resolve_policy_missing_args(client, fetch, site_id, domain):
     with pytest.raises(UnifiAPIError, match="specified"):
-        client.resolve_policy(site_id, domain)
+        client.resolve_policy(site_id, "A_RECORD", domain)
     fetch.assert_not_called()
 
 

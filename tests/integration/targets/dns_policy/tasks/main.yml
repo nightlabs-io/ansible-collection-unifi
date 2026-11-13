@@ -1,8 +1,9 @@
 ---
 # Integration tests for nightlabs.unifi.dns_policy against a live console.
 # Connection details come from tests/integration/integration_config.yml (see the .template).
-# Destructive: creates, changes and deletes three throwaway records, named below. They are
-# removed before the tests start and again afterwards, whether or not the tests pass.
+# Destructive: creates, changes and deletes the throwaway records listed in `throwaway`
+# below. They are removed before the tests start and again afterwards, whether or not the
+# tests pass.
 
 - name: Check the connection variables are set
   ansible.builtin.assert:
@@ -18,50 +19,64 @@
       host: "{{ unifi_host }}"
       api_key: "{{ unifi_api_key }}"
       validate_certs: "{{ unifi_validate_certs | default(true) }}"
+      site: "{{ unifi_site | default('default') }}"
   vars:
-    site: "{{ unifi_site | default('default') }}"
-    record_type_a: "A_RECORD"
-    record_type_aaaa: "AAAA_RECORD"
+    # A and AAAA share domain_a, to show that two types on one domain are two records.
     domain_a: "ansible-test-a.lan"
-    domain_aaaa: "ansible-test-aaaa.lan"
     domain_cname: "ansible-test-cname.lan"
-    record_type_cname: "CNAME_RECORD"
-    target_domain_cname: "ansible-test-a.lan"
-    target_domain_cname_updated: "ansible-test-aaaa.lan"
-    enabled: true
+    # MX, TXT and SRV records share one domain, several of a type at once.
+    domain_shared: "ansible-test-shared.lan"
+    domain_forward: "ansible-test-forward.lan"
     ipv4_address_a: "192.0.2.1"
     ipv4_address_a_updated: "192.0.2.2"
     ipv4_address_a_check_mode: "192.0.2.3"
-    ipv6_address_aaaa: "2001:db8::10"
+    ipv6_address_a: "2001:db8::10"
     ttl_seconds_a: 3600
-    ttl_seconds_aaaa: 300
+    mx_records:
+      - {server: "mail1.ansible-test.lan", priority: 10}
+      - {server: "mail2.ansible-test.lan", priority: 20}
+    txt_text: "ansible-test Text"
+    srv_records:
+      - {server: "ldap1.ansible-test.lan", port: 389, priority: 10, weight: 5}
+      - {server: "ldap2.ansible-test.lan", port: 389, priority: 20, weight: 0}
+    forward_addresses: ["192.0.2.53", "2001:db8::53"]
+    # Every record the tests may create, by type and identity, for the pre-flight and clean-up.
+    throwaway:
+      - {record_type: A_RECORD, domain: "{{ domain_a }}"}
+      - {record_type: AAAA_RECORD, domain: "{{ domain_a }}"}
+      - {record_type: CNAME_RECORD, domain: "{{ domain_cname }}"}
+      - {record_type: MX_RECORD, domain: "{{ domain_shared }}", mail_server_domain: "{{ mx_records[0].server }}"}
+      - {record_type: MX_RECORD, domain: "{{ domain_shared }}", mail_server_domain: "{{ mx_records[1].server }}"}
+      - {record_type: TXT_RECORD, domain: "{{ domain_shared }}", text: "{{ txt_text }}"}
+      - {record_type: SRV_RECORD, domain: "{{ domain_shared }}", service: _ldap, protocol: _tcp,
+         server_domain: "{{ srv_records[0].server }}"}
+      - {record_type: SRV_RECORD, domain: "{{ domain_shared }}", service: _ldap, protocol: _tcp,
+         server_domain: "{{ srv_records[1].server }}"}
+      - {record_type: FORWARD_DOMAIN, domain: "{{ domain_forward }}", ip_address: "{{ forward_addresses[0] }}"}
+      - {record_type: FORWARD_DOMAIN, domain: "{{ domain_forward }}", ip_address: "{{ forward_addresses[1] }}"}
   block:
     # --- pre-flight: remove anything a crashed earlier run left behind --------
 
-    - name: Pre-flight -> Delete {{ domain_a }}
+    - name: Pre-flight -> Delete the throwaway records
       nightlabs.unifi.dns_policy:
-        site: "{{ site }}"
-        domain: "{{ domain_a }}"
+        record_type: "{{ item.record_type }}"
+        domain: "{{ item.domain }}"
+        mail_server_domain: "{{ item.mail_server_domain | default(omit) }}"
+        text: "{{ item.text | default(omit) }}"
+        service: "{{ item.service | default(omit) }}"
+        protocol: "{{ item.protocol | default(omit) }}"
+        server_domain: "{{ item.server_domain | default(omit) }}"
+        ip_address: "{{ item.ip_address | default(omit) }}"
         state: absent
-
-    - name: Pre-flight -> Delete {{ domain_aaaa }}
-      nightlabs.unifi.dns_policy:
-        site: "{{ site }}"
-        domain: "{{ domain_aaaa }}"
-        state: absent
-
-    - name: Pre-flight -> Delete {{ domain_cname }}
-      nightlabs.unifi.dns_policy:
-        site: "{{ site }}"
-        domain: "{{ domain_cname }}"
-        state: absent
+      loop: "{{ throwaway }}"
+      loop_control:
+        label: "{{ item.record_type }} {{ item.domain }}"
 
     # --- A record: create in check mode, create, rerun ------------------------
 
     - name: Create A_RECORD {{ domain_a }} in check mode
       nightlabs.unifi.dns_policy:
-        site: "{{ site }}"
-        record_type: "{{ record_type_a }}"
+        record_type: A_RECORD
         domain: "{{ domain_a }}"
         ipv4_address: "{{ ipv4_address_a }}"
       check_mode: true
@@ -75,10 +90,9 @@
 
     - name: Create A_RECORD {{ domain_a }}
       nightlabs.unifi.dns_policy:
-        site: "{{ site }}"
-        record_type: "{{ record_type_a }}"
+        record_type: A_RECORD
         domain: "{{ domain_a }}"
-        enabled: "{{ enabled }}"
+        enabled: true
         ipv4_address: "{{ ipv4_address_a }}"
         ttl_seconds: "{{ ttl_seconds_a }}"
       register: created_a
@@ -89,19 +103,18 @@
           # Still a change, so the check-mode run above created nothing.
           - created_a is changed
           - created_a.policy.id is defined
-          - created_a.policy.type == record_type_a
+          - created_a.policy.type == 'A_RECORD'
           - created_a.policy.domain == domain_a
-          - created_a.policy.enabled == enabled
+          - created_a.policy.enabled
           - created_a.policy.ipv4Address == ipv4_address_a
           - created_a.policy.ipv6Address is not defined
           - created_a.policy.ttlSeconds == ttl_seconds_a
 
     - name: Create A_RECORD {{ domain_a }} again with the same values
       nightlabs.unifi.dns_policy:
-        site: "{{ site }}"
-        record_type: "{{ record_type_a }}"
+        record_type: A_RECORD
         domain: "{{ domain_a }}"
-        enabled: "{{ enabled }}"
+        enabled: true
         ipv4_address: "{{ ipv4_address_a }}"
         ttl_seconds: "{{ ttl_seconds_a }}"
       register: recreated_a
@@ -116,8 +129,7 @@
 
     - name: Update A_RECORD {{ domain_a }}, leaving the TTL unset
       nightlabs.unifi.dns_policy:
-        site: "{{ site }}"
-        record_type: "{{ record_type_a }}"
+        record_type: A_RECORD
         domain: "{{ domain_a }}"
         enabled: false
         ipv4_address: "{{ ipv4_address_a_updated }}"
@@ -128,28 +140,27 @@
         that:
           - updated_a is changed
           - updated_a.policy.id == created_a.policy.id
-          - updated_a.policy.enabled == false
+          - not updated_a.policy.enabled
           - updated_a.policy.ipv4Address == ipv4_address_a_updated
           - updated_a.policy.ttlSeconds == ttl_seconds_a
 
-    - name: Update A_RECORD {{ domain_a }} again with the same values
+    - name: Re-enable A_RECORD {{ domain_a }} without giving its address
       nightlabs.unifi.dns_policy:
-        site: "{{ site }}"
-        record_type: "{{ record_type_a }}"
+        record_type: A_RECORD
         domain: "{{ domain_a }}"
-        enabled: false
-        ipv4_address: "{{ ipv4_address_a_updated }}"
-      register: reupdated_a
+        enabled: true
+      register: reenabled_a
 
-    - name: Check the second update changed nothing
+    - name: Check the address was kept
       ansible.builtin.assert:
         that:
-          - reupdated_a is not changed
+          - reenabled_a is changed
+          - reenabled_a.policy.enabled
+          - reenabled_a.policy.ipv4Address == ipv4_address_a_updated
 
     - name: Look up {{ domain_a }} with mixed case
       nightlabs.unifi.dns_policy:
-        site: "{{ site }}"
-        record_type: "{{ record_type_a }}"
+        record_type: A_RECORD
         domain: "{{ domain_a | upper }}"
         ipv4_address: "{{ ipv4_address_a_updated }}"
       register: mixed_case_a
@@ -164,8 +175,7 @@
 
     - name: Change the address of {{ domain_a }} in check mode
       nightlabs.unifi.dns_policy:
-        site: "{{ site }}"
-        record_type: "{{ record_type_a }}"
+        record_type: A_RECORD
         domain: "{{ domain_a }}"
         ipv4_address: "{{ ipv4_address_a_check_mode }}"
       check_mode: true
@@ -173,8 +183,7 @@
 
     - name: Rerun with the real current address
       nightlabs.unifi.dns_policy:
-        site: "{{ site }}"
-        record_type: "{{ record_type_a }}"
+        record_type: A_RECORD
         domain: "{{ domain_a }}"
         ipv4_address: "{{ ipv4_address_a_updated }}"
       register: after_check_mode_a
@@ -186,32 +195,41 @@
           - after_check_mode_a is not changed
           - after_check_mode_a.policy.ipv4Address == ipv4_address_a_updated
 
-    # --- A record: type change is refused -------------------------------------
+    # --- AAAA on the same domain: a second record, the A record untouched -----
 
-    - name: Try to change {{ domain_a }} to an AAAA record
+    - name: Create AAAA_RECORD {{ domain_a }}
       nightlabs.unifi.dns_policy:
-        site: "{{ site }}"
-        record_type: "{{ record_type_aaaa }}"
+        record_type: AAAA_RECORD
         domain: "{{ domain_a }}"
-        ipv6_address: "{{ ipv6_address_aaaa }}"
-      register: type_change_a
-      ignore_errors: true
+        ipv6_address: "{{ ipv6_address_a }}"
+      register: created_aaaa
 
-    - name: Check the type change failed with a clear message
-      ansible.builtin.assert:
-        that:
-          - type_change_a is failed
-          - type_change_a.msg is search("Cannot change type")
-
-    # --- A record: value for another type is refused --------------------------
-
-    - name: Try to set a CNAME target on {{ domain_a }}
+    - name: Rerun the A record
       nightlabs.unifi.dns_policy:
-        site: "{{ site }}"
-        record_type: "{{ record_type_a }}"
+        record_type: A_RECORD
         domain: "{{ domain_a }}"
         ipv4_address: "{{ ipv4_address_a_updated }}"
-        target_domain: "{{ target_domain_cname }}"
+      register: a_beside_aaaa
+
+    - name: Check the AAAA record is its own record and the A record is unchanged
+      ansible.builtin.assert:
+        that:
+          - created_aaaa is changed
+          - created_aaaa.policy.id != created_a.policy.id
+          - created_aaaa.policy.type == 'AAAA_RECORD'
+          - created_aaaa.policy.ipv6Address == ipv6_address_a
+          - created_aaaa.policy.ipv4Address is not defined
+          - a_beside_aaaa is not changed
+          - a_beside_aaaa.policy.id == created_a.policy.id
+
+    # --- option of another type is refused ------------------------------------
+
+    - name: Try to set a CNAME target on an A record
+      nightlabs.unifi.dns_policy:
+        record_type: A_RECORD
+        domain: "{{ domain_a }}"
+        ipv4_address: "{{ ipv4_address_a_updated }}"
+        target_domain: "{{ domain_cname }}"
       register: stray_option_a
       ignore_errors: true
 
@@ -221,11 +239,11 @@
           - stray_option_a is failed
           - stray_option_a.msg is search("target_domain cannot be set")
 
-    # --- A record: delete in check mode, delete, rerun ------------------------
+    # --- delete A in check mode, delete, rerun; the AAAA record stays ----------
 
     - name: Delete A_RECORD {{ domain_a }} in check mode
       nightlabs.unifi.dns_policy:
-        site: "{{ site }}"
+        record_type: A_RECORD
         domain: "{{ domain_a }}"
         state: absent
       check_mode: true
@@ -233,96 +251,67 @@
 
     - name: Delete A_RECORD {{ domain_a }}
       nightlabs.unifi.dns_policy:
-        site: "{{ site }}"
+        record_type: A_RECORD
         domain: "{{ domain_a }}"
         state: absent
       register: deleted_a
 
     - name: Delete A_RECORD {{ domain_a }} again
       nightlabs.unifi.dns_policy:
-        site: "{{ site }}"
+        record_type: A_RECORD
         domain: "{{ domain_a }}"
         state: absent
       register: redeleted_a
 
-    - name: Check check mode predicted the delete, then the real delete changed something and the rerun did not
+    - name: Rerun the AAAA record
+      nightlabs.unifi.dns_policy:
+        record_type: AAAA_RECORD
+        domain: "{{ domain_a }}"
+        ipv6_address: "{{ ipv6_address_a }}"
+      register: aaaa_after_delete
+
+    - name: Check the deletes, and that the AAAA record survived the A delete
       ansible.builtin.assert:
         that:
           - check_mode_deleted_a is changed
           # Still a change, so the check-mode run above deleted nothing.
           - deleted_a is changed
           - redeleted_a is not changed
+          - aaaa_after_delete is not changed
+          - aaaa_after_delete.policy.id == created_aaaa.policy.id
 
-    # --- AAAA record: create, delete ------------------------------------------
-
-    - name: Create AAAA_RECORD {{ domain_aaaa }}
-      nightlabs.unifi.dns_policy:
-        site: "{{ site }}"
-        record_type: "{{ record_type_aaaa }}"
-        domain: "{{ domain_aaaa }}"
-        enabled: "{{ enabled }}"
-        ipv6_address: "{{ ipv6_address_aaaa }}"
-        ttl_seconds: "{{ ttl_seconds_aaaa }}"
-      register: created_aaaa
-
-    - name: Check the created AAAA record
-      ansible.builtin.assert:
-        that:
-          - created_aaaa is changed
-          - created_aaaa.policy.type == record_type_aaaa
-          - created_aaaa.policy.domain == domain_aaaa
-          - created_aaaa.policy.enabled == enabled
-          - created_aaaa.policy.ipv4Address is not defined
-          - created_aaaa.policy.ipv6Address == ipv6_address_aaaa
-          - created_aaaa.policy.ttlSeconds == ttl_seconds_aaaa
-
-    - name: Delete AAAA_RECORD {{ domain_aaaa }}
-      nightlabs.unifi.dns_policy:
-        site: "{{ site }}"
-        domain: "{{ domain_aaaa }}"
-        state: absent
-      register: deleted_aaaa
-
-    - name: Check the AAAA delete changed something
-      ansible.builtin.assert:
-        that:
-          - deleted_aaaa is changed
-
-    # --- CNAME record: create, update target, rerun, delete -------------------
+    # --- CNAME record: create, update target, rerun ---------------------------
 
     - name: Create CNAME_RECORD {{ domain_cname }}
       nightlabs.unifi.dns_policy:
-        site: "{{ site }}"
-        record_type: "{{ record_type_cname }}"
+        record_type: CNAME_RECORD
         domain: "{{ domain_cname }}"
-        target_domain: "{{ target_domain_cname }}"
+        target_domain: "{{ domain_a }}"
       register: created_cname
 
     - name: Check the created CNAME record, including the create-time defaults
       ansible.builtin.assert:
         that:
           - created_cname is changed
-          - created_cname.policy.type == record_type_cname
+          - created_cname.policy.type == 'CNAME_RECORD'
           - created_cname.policy.domain == domain_cname
-          - created_cname.policy.targetDomain == target_domain_cname
+          - created_cname.policy.targetDomain == domain_a
           - created_cname.policy.ipv4Address is not defined
-          - created_cname.policy.enabled == true
+          - created_cname.policy.enabled
           - created_cname.policy.ttlSeconds == 14400
 
     - name: Point CNAME_RECORD {{ domain_cname }} at a new target
       nightlabs.unifi.dns_policy:
-        site: "{{ site }}"
-        record_type: "{{ record_type_cname }}"
+        record_type: CNAME_RECORD
         domain: "{{ domain_cname }}"
-        target_domain: "{{ target_domain_cname_updated }}"
+        target_domain: "{{ domain_shared }}"
       register: updated_cname
 
     - name: Point it at the same target again
       nightlabs.unifi.dns_policy:
-        site: "{{ site }}"
-        record_type: "{{ record_type_cname }}"
+        record_type: CNAME_RECORD
         domain: "{{ domain_cname }}"
-        target_domain: "{{ target_domain_cname_updated }}"
+        target_domain: "{{ domain_shared }}"
       register: reupdated_cname
 
     - name: Check the target changed once, then not again
@@ -330,36 +319,231 @@
         that:
           - updated_cname is changed
           - updated_cname.policy.id == created_cname.policy.id
-          - updated_cname.policy.targetDomain == target_domain_cname_updated
+          - updated_cname.policy.targetDomain == domain_shared
           - reupdated_cname is not changed
 
-    - name: Delete CNAME_RECORD {{ domain_cname }}
-      nightlabs.unifi.dns_policy:
-        site: "{{ site }}"
-        domain: "{{ domain_cname }}"
-        state: absent
-      register: deleted_cname
+    # --- MX: two on one domain, rerun, update one, delete one -----------------
 
-    - name: Check the CNAME delete changed something
+    - name: Create MX_RECORD {{ domain_shared }} without a priority
+      nightlabs.unifi.dns_policy:
+        record_type: MX_RECORD
+        domain: "{{ domain_shared }}"
+        mail_server_domain: "{{ mx_records[0].server }}"
+      register: mx_no_priority
+      ignore_errors: true
+
+    - name: Check creating without a required attribute failed with a clear message
       ansible.builtin.assert:
         that:
-          - deleted_cname is changed
+          - mx_no_priority is failed
+          - mx_no_priority.msg is search("requires priority")
+
+    - name: Create two MX_RECORDs on {{ domain_shared }}
+      nightlabs.unifi.dns_policy:
+        record_type: MX_RECORD
+        domain: "{{ domain_shared }}"
+        mail_server_domain: "{{ item.server }}"
+        priority: "{{ item.priority }}"
+      loop: "{{ mx_records }}"
+      register: created_mx
+
+    - name: Create them again
+      nightlabs.unifi.dns_policy:
+        record_type: MX_RECORD
+        domain: "{{ domain_shared }}"
+        mail_server_domain: "{{ item.server }}"
+        priority: "{{ item.priority }}"
+      loop: "{{ mx_records }}"
+      register: recreated_mx
+
+    - name: Check the MX records are two records with their own fields, and the rerun changed nothing
+      ansible.builtin.assert:
+        that:
+          - created_mx.results | select('changed') | list | length == 2
+          - created_mx.results | map(attribute='policy.id') | unique | list | length == 2
+          - created_mx.results[1].policy.mailServerDomain == mx_records[1].server
+          - created_mx.results[1].policy.priority == mx_records[1].priority
+          - created_mx.results[1].policy.ttlSeconds is not defined
+          - recreated_mx is not changed
+
+    - name: Change the priority of the second MX_RECORD to 0
+      nightlabs.unifi.dns_policy:
+        record_type: MX_RECORD
+        domain: "{{ domain_shared }}"
+        mail_server_domain: "{{ mx_records[1].server }}"
+        priority: 0
+      register: updated_mx
+
+    - name: Check the update kept the record and stored the zero
+      ansible.builtin.assert:
+        that:
+          - updated_mx is changed
+          - updated_mx.policy.id == created_mx.results[1].policy.id
+          - updated_mx.policy.priority == 0
+
+    - name: Delete the second MX_RECORD
+      nightlabs.unifi.dns_policy:
+        record_type: MX_RECORD
+        domain: "{{ domain_shared }}"
+        mail_server_domain: "{{ mx_records[1].server }}"
+        state: absent
+      register: deleted_mx
+
+    - name: Rerun the first MX_RECORD
+      nightlabs.unifi.dns_policy:
+        record_type: MX_RECORD
+        domain: "{{ domain_shared }}"
+        mail_server_domain: "{{ mx_records[0].server }}"
+        priority: "{{ mx_records[0].priority }}"
+      register: first_mx_after_delete
+
+    - name: Check the delete removed only the second MX record
+      ansible.builtin.assert:
+        that:
+          - deleted_mx is changed
+          - first_mx_after_delete is not changed
+          - first_mx_after_delete.policy.id == created_mx.results[0].policy.id
+
+    # --- TXT on the same domain: create, rerun, case matters --------------------
+
+    - name: Create TXT_RECORD {{ domain_shared }}
+      nightlabs.unifi.dns_policy:
+        record_type: TXT_RECORD
+        domain: "{{ domain_shared }}"
+        text: "{{ txt_text }}"
+      register: created_txt
+
+    - name: Create it again
+      nightlabs.unifi.dns_policy:
+        record_type: TXT_RECORD
+        domain: "{{ domain_shared }}"
+        text: "{{ txt_text }}"
+      register: recreated_txt
+
+    - name: Look for the text in another case, in check mode
+      nightlabs.unifi.dns_policy:
+        record_type: TXT_RECORD
+        domain: "{{ domain_shared }}"
+        text: "{{ txt_text | lower }}"
+      check_mode: true
+      register: other_case_txt
+
+    - name: Check the TXT record, and that text in another case is another record
+      ansible.builtin.assert:
+        that:
+          - created_txt is changed
+          - created_txt.policy.text == txt_text
+          - created_txt.policy.ttlSeconds is not defined
+          - recreated_txt is not changed
+          - recreated_txt.policy.id == created_txt.policy.id
+          - other_case_txt is changed
+          - other_case_txt.msg is search("would be created")
+
+    - name: Try to set a TTL on a TXT record
+      nightlabs.unifi.dns_policy:
+        record_type: TXT_RECORD
+        domain: "{{ domain_shared }}"
+        text: "{{ txt_text }}"
+        ttl_seconds: 300
+      register: txt_ttl
+      ignore_errors: true
+
+    - name: Check the TTL was refused
+      ansible.builtin.assert:
+        that:
+          - txt_ttl is failed
+          - txt_ttl.msg is search("ttl_seconds cannot be set")
+
+    # --- SRV: two for one service, rerun, update one --------------------------
+
+    - name: Create two _ldap._tcp SRV_RECORDs on {{ domain_shared }}
+      nightlabs.unifi.dns_policy:
+        record_type: SRV_RECORD
+        domain: "{{ domain_shared }}"
+        service: _ldap
+        protocol: _tcp
+        server_domain: "{{ item.server }}"
+        service_port: "{{ item.port }}"
+        priority: "{{ item.priority }}"
+        weight: "{{ item.weight }}"
+      loop: "{{ srv_records }}"
+      register: created_srv
+
+    - name: Create them again
+      nightlabs.unifi.dns_policy:
+        record_type: SRV_RECORD
+        domain: "{{ domain_shared }}"
+        service: _ldap
+        protocol: _tcp
+        server_domain: "{{ item.server }}"
+        service_port: "{{ item.port }}"
+        priority: "{{ item.priority }}"
+        weight: "{{ item.weight }}"
+      loop: "{{ srv_records }}"
+      register: recreated_srv
+
+    - name: Move the first SRV_RECORD to another port
+      nightlabs.unifi.dns_policy:
+        record_type: SRV_RECORD
+        domain: "{{ domain_shared }}"
+        service: _ldap
+        protocol: _tcp
+        server_domain: "{{ srv_records[0].server }}"
+        service_port: 636
+      register: updated_srv
+
+    - name: Check the SRV records
+      ansible.builtin.assert:
+        that:
+          - created_srv.results | select('changed') | list | length == 2
+          - created_srv.results | map(attribute='policy.id') | unique | list | length == 2
+          - created_srv.results[1].policy.service == '_ldap'
+          - created_srv.results[1].policy.protocol == '_tcp'
+          - created_srv.results[1].policy.port == srv_records[1].port
+          - created_srv.results[1].policy.weight == 0
+          - recreated_srv is not changed
+          - updated_srv is changed
+          - updated_srv.policy.id == created_srv.results[0].policy.id
+          - updated_srv.policy.port == 636
+          - updated_srv.policy.priority == srv_records[0].priority
+
+    # --- FORWARD_DOMAIN: IPv4 and IPv6 on one domain, rerun -------------------
+
+    - name: Forward {{ domain_forward }} to two servers
+      nightlabs.unifi.dns_policy:
+        record_type: FORWARD_DOMAIN
+        domain: "{{ domain_forward }}"
+        ip_address: "{{ item }}"
+      loop: "{{ forward_addresses }}"
+      register: created_forward
+
+    - name: Forward it again
+      nightlabs.unifi.dns_policy:
+        record_type: FORWARD_DOMAIN
+        domain: "{{ domain_forward }}"
+        ip_address: "{{ item }}"
+      loop: "{{ forward_addresses }}"
+      register: recreated_forward
+
+    - name: Check the forwards
+      ansible.builtin.assert:
+        that:
+          - created_forward.results | select('changed') | list | length == 2
+          - created_forward.results | map(attribute='policy.ipAddress') | list == forward_addresses
+          - recreated_forward is not changed
 
   always:
-    - name: Clean up -> Delete {{ domain_a }}
+    - name: Clean up -> Delete the throwaway records
       nightlabs.unifi.dns_policy:
-        site: "{{ site }}"
-        domain: "{{ domain_a }}"
+        record_type: "{{ item.record_type }}"
+        domain: "{{ item.domain }}"
+        mail_server_domain: "{{ item.mail_server_domain | default(omit) }}"
+        text: "{{ item.text | default(omit) }}"
+        service: "{{ item.service | default(omit) }}"
+        protocol: "{{ item.protocol | default(omit) }}"
+        server_domain: "{{ item.server_domain | default(omit) }}"
+        ip_address: "{{ item.ip_address | default(omit) }}"
         state: absent
-
-    - name: Clean up -> Delete {{ domain_aaaa }}
-      nightlabs.unifi.dns_policy:
-        site: "{{ site }}"
-        domain: "{{ domain_aaaa }}"
-        state: absent
-
-    - name: Clean up -> Delete {{ domain_cname }}
-      nightlabs.unifi.dns_policy:
-        site: "{{ site }}"
-        domain: "{{ domain_cname }}"
-        state: absent
+      loop: "{{ throwaway }}"
+      loop_control:
+        label: "{{ item.record_type }} {{ item.domain }}"

@@ -1,6 +1,6 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
-# Copyright: (c) 2026, NightLabs
+# Copyright: (c) 2026, John Cuckovich
 # GNU General Public License v3.0+ (see LICENSE or https://www.gnu.org/licenses/gpl-3.0.txt)
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ version_added: 0.1.0
 description:
   - Returns the adopted devices on one site of a UniFi Network application using the official Integration API.
 author:
-  - NightLabs (@nightlabs-io)
+  - John Cuckovich (@jpcuckovi)
 options:
   device:
     description:

@@ -5,12 +5,12 @@ built on the official UniFi Network Integration API (`/proxy/network/integration
 
 ## Modules
 
-| Module                            | Description                                                                 |
-| --------------------------------- | --------------------------------------------------------------------------- |
-| `nightlabs.unifi.site_info`       | List sites, or look up one site by UUID, internal reference or display name |
-| `nightlabs.unifi.device_info`     | List the adopted devices on a site, or get the full detail of one device    |
-| `nightlabs.unifi.dns_policy_info` | List the DNS policies (local DNS records) on a site, or get one policy      |
-| `nightlabs.unifi.dns_policy`      | Create, update or delete an A, AAAA or CNAME DNS policy on a site           |
+| Module                            | Description                                                                    |
+| --------------------------------- | ------------------------------------------------------------------------------ |
+| `nightlabs.unifi.site_info`       | List sites, or look up one site by UUID, internal reference or display name    |
+| `nightlabs.unifi.device_info`     | List the adopted devices on a site, or get the full detail of one device       |
+| `nightlabs.unifi.dns_policy_info` | List the DNS policies (local DNS records) on a site, or get one policy         |
+| `nightlabs.unifi.dns_policy`      | Create, update or delete a DNS policy of any type the Network app offers       |
 
 The `_info` modules are read-only. `dns_policy` is idempotent: it changes only the fields a task
 sets, and reports `changed` only when the console differed. All modules support check mode. Full
@@ -34,7 +34,7 @@ The collection is installed from git. In a `requirements.yml`:
 
 ```yaml
 collections:
-  - name: https://github.com/nightlabs-io/ansible-collection-unifi.git
+  - name: https://github.com/jpcuckovi/ansible-collection-unifi.git
     type: git
     version: main
 ```
@@ -87,9 +87,10 @@ per play with `module_defaults` instead of on every task.
         label: "{{ item.id }}"
 ```
 
-Records are managed with `dns_policy`, which finds each one by its domain. A rerun
-with the same values reports no change, and a value left unset keeps what the
-console already has:
+Records are managed with `dns_policy`, which finds each one by its type, its domain
+and, where one domain can hold several records of a type, the fields that tell them
+apart (the module documentation lists them). A rerun with the same values reports no
+change, and a value left unset keeps what the console already has:
 
 ```yaml
 - name: Publish a host and an alias for it
@@ -121,6 +122,7 @@ console already has:
       nightlabs.unifi.dns_policy:
         site: default
         domain: old.example.lan
+        record_type: A_RECORD
         state: absent
 ```
 
@@ -137,10 +139,9 @@ change when a site is renamed, so it is the most stable choice for playbooks.
 - `dns_policy_info` returns only DNS records created as DNS policies. Records generated from a
   client's Local DNS Record setting (on a client with a fixed IP address) appear in the Network
   app's DNS Records list but are not returned by the Integration API.
-- `dns_policy` manages A, AAAA and CNAME records only. The Network app also offers MX, TXT, SRV
-  and forward-domain policies, which this module does not handle.
-- `dns_policy` identifies a record by its domain, so it cannot rename one, and it refuses to change
-  an existing record's type. Both need the record deleted and created again.
+- `dns_policy` identifies a record by its type, its domain and its identifying fields, so a
+  change to any of those is a different record: the task creates it and leaves the old one in
+  place. Remove the old one with `state: absent`.
 
 ## Development
 
